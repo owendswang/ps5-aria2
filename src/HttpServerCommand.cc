@@ -56,6 +56,9 @@
 #ifdef ENABLE_WEBSOCKET
 #  include "WebSocketResponseCommand.h"
 #endif // ENABLE_WEBSOCKET
+#ifdef ARIA2_PS5
+#  include "ps5_ariang_html.h"
+#endif
 
 namespace aria2 {
 
@@ -209,6 +212,20 @@ bool HttpServerCommand::execute()
         return true;
       }
       auto& header = httpServer_->getRequestHeader();
+#ifdef ARIA2_PS5
+      const auto path = httpServer_->createPath();
+      if (httpServer_->getMethod() == "GET" &&
+          (path == "/" || path == "/index.html")) {
+        httpServer_->disableGZip();
+        httpServer_->feedResponse(
+            std::string(kPs5AriaNgHtml, sizeof(kPs5AriaNgHtml) - 1),
+            "text/html; charset=utf-8");
+        e_->addCommand(make_unique<HttpServerResponseCommand>(
+            getCuid(), httpServer_, e_, socket_));
+        e_->setNoWait(true);
+        return true;
+      }
+#endif
       if (header->fieldContains(HttpHeader::UPGRADE, "websocket") &&
           header->fieldContains(HttpHeader::CONNECTION, "upgrade")) {
 #ifdef ENABLE_WEBSOCKET

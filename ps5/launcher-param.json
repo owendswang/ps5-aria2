@@ -1,0 +1,11 @@
+{
+  "applicationCategoryType": 65536,
+  "titleId": "ARIA26800",
+  "deeplinkUri": "http://localhost:6800/",
+  "localizedParameters": {
+    "defaultLanguage": "en-US",
+    "en-US": {
+      "titleName": "AriaNg"
+    }
+  }
+}

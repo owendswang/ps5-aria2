@@ -36,6 +36,20 @@
 
 #include <algorithm>
 
+#ifdef ARIA2_PS5
+#  include <cerrno>
+#  include <cstdio>
+#  include <fcntl.h>
+#  include <sys/stat.h>
+#  include <unistd.h>
+#  include <ps5/kernel.h>
+#  include "ps5_launcher_assets.h"
+
+extern "C" int sceKernelSendNotificationRequest(int, void*, size_t, int);
+extern "C" int sceAppInstUtilInitialize(void);
+extern "C" int sceAppInstUtilAppInstallAll(void*);
+#endif
+
 #include "Option.h"
 #include "RequestGroup.h"
 #include "DownloadEngine.h"
@@ -78,6 +92,7 @@
 #include "FileAllocationEntry.h"
 #include "HttpListenCommand.h"
 #include "LogFactory.h"
+#include "fmt.h"
 
 namespace aria2 {
 
@@ -143,6 +158,80 @@ std::unique_ptr<EventPoll> createEventPoll(Option* op)
   assert(0);
   return nullptr;
 }
+#ifdef ARIA2_PS5
+bool writeLauncherFile(const char* path, const char* data, size_t size)
+{
+  struct stat st;
+  if (stat(path, &st) == 0) {
+    if (S_ISREG(st.st_mode)) {
+      return true;
+    }
+    errno = EISDIR;
+    return false;
+  }
+  if (errno != ENOENT) {
+    return false;
+  }
+
+  int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+  if (fd < 0) {
+    return false;
+  }
+  size_t offset = 0;
+  while (offset < size) {
+    ssize_t count = write(fd, data + offset, size - offset);
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count <= 0) {
+      int savedError = count < 0 ? errno : EIO;
+      close(fd);
+      unlink(path);
+      errno = savedError;
+      return false;
+    }
+    offset += count;
+  }
+  if (close(fd) != 0) {
+    int savedError = errno;
+    unlink(path);
+    errno = savedError;
+    return false;
+  }
+  return true;
+}
+
+int installAriaNgLauncher()
+{
+  constexpr const char* titleId = "ARIA26800";
+  constexpr const char* baseDir = "/user/app/ARIA26800";
+  constexpr const char* systemDir = "/user/app/ARIA26800/sce_sys";
+  if ((mkdir(baseDir, 0755) != 0 && errno != EEXIST) ||
+      (mkdir(systemDir, 0755) != 0 && errno != EEXIST) ||
+      !writeLauncherFile("/user/app/ARIA26800/sce_sys/param.json",
+                         kPs5LauncherParam, sizeof(kPs5LauncherParam) - 1) ||
+      !writeLauncherFile("/user/app/ARIA26800/sce_sys/icon0.png",
+                         kPs5LauncherIcon, sizeof(kPs5LauncherIcon) - 1)) {
+    return -errno;
+  }
+
+  int result = sceAppInstUtilInitialize();
+  if (result != 0) {
+    return result;
+  }
+
+  uint32_t handle;
+  if (kernel_dynlib_handle(-1, "libSceAppInstUtil.sprx", &handle) == 0) {
+    using InstallTitleDir = int (*)(const char*, const char*, void*);
+    auto address = kernel_dynlib_resolve(-1, handle, "Wudg3Xe3heE");
+    if (address != 0) {
+      return reinterpret_cast<InstallTitleDir>(address)(titleId, "/user/app/",
+                                                         nullptr);
+    }
+  }
+  return sceAppInstUtilAppInstallAll(nullptr);
+}
+#endif
 } // namespace
 
 std::unique_ptr<DownloadEngine> DownloadEngineFactory::newDownloadEngine(
@@ -218,6 +307,27 @@ std::unique_ptr<DownloadEngine> DownloadEngineFactory::newDownloadEngine(
     if (!ok) {
       throw DL_ABORT_EX("Failed to setup RPC server.");
     }
+#ifdef ARIA2_PS5
+    int launcherResult = installAriaNgLauncher();
+    if (launcherResult != 0) {
+      A2_LOG_WARN(fmt("Failed to install AriaNg launcher (code 0x%08X).",
+                      static_cast<unsigned>(launcherResult)));
+    }
+    struct NotificationRequest {
+      char reserved[45];
+      char message[3075];
+    } request = {};
+    std::snprintf(request.message, sizeof(request.message),
+                  "aria2 v%s\nRPC port %d", PACKAGE_VERSION,
+                  op->getAsInt(PREF_RPC_LISTEN_PORT));
+    if (sceKernelSendNotificationRequest(0, &request, sizeof(request), 0) !=
+        0) {
+      A2_LOG_WARN("Failed to send PS5 startup notification.");
+    }
+    else {
+      A2_LOG_NOTICE(request.message);
+    }
+#endif
   }
   return e;
 }

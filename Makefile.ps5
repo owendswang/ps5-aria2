@@ -1,0 +1,200 @@
+PS5_SDK ?= /opt/ps5-payload-sdk
+JOBS ?= 4
+
+ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+WORK := $(ROOT)/.ps5-work
+ARIANG_VERSION := 1.3.15
+ARIANG_REV := d3ccb51527d56d8b77a5928f0e1421d02ecbc1a1
+ARIANG_SHA256 := b2b8b81a2825ec4854f9707af13e4e6d22495c10d9f11560a46906fcd10d7f7f
+ARIANG_ARCHIVE := $(WORK)/downloads/AriaNg-$(ARIANG_VERSION)-d3ccb51.tar.gz
+ifeq ($(origin ARIANG_SRC),undefined)
+ARIANG_SRC := $(WORK)/AriaNg-$(ARIANG_REV)
+ARIANG_FETCH := 1
+endif
+OUT := $(ROOT)/ps5-build
+OUT_ARIA2 := $(OUT)/aria2
+LICENSE_OUT := $(ROOT)/ps5-licenses
+CARES_VERSION := 1.34.8
+CARES_SHA256 := c222b6d681096f9444d2c4863d2c1174019e27cacca0a4a5c114d36dd7d7bf78
+CARES_ARCHIVE := $(WORK)/downloads/c-ares-$(CARES_VERSION).tar.gz
+CARES_SOURCE := $(WORK)/c-ares-$(CARES_VERSION)
+CARES_BUILD := $(WORK)/c-ares-build
+CARES_STAGE := $(WORK)/stage/user/homebrew
+CARES_LIB := $(CARES_STAGE)/lib/libcares.a
+OPENSSL_VERSION := 3.5.8
+OPENSSL_SHA256 := a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2
+OPENSSL_ARCHIVE := $(WORK)/downloads/openssl-$(OPENSSL_VERSION).tar.gz
+OPENSSL_SOURCE := $(WORK)/openssl-$(OPENSSL_VERSION)
+OPENSSL_STAGE := $(WORK)/openssl-stage/user/homebrew
+OPENSSL_CRYPTO := $(OPENSSL_STAGE)/lib/libcrypto.a
+OPENSSL_SSL := $(OPENSSL_STAGE)/lib/libssl.a
+ARIA2_BUILD := $(WORK)/aria2
+PS5_DEFAULT_HEADER := $(WORK)/generated/ps5_default_config.h
+ARIANG_BUILD := $(WORK)/ariang
+ARIANG_HTML := $(ARIANG_BUILD)/dist/index.html
+PS5_ARIANG_HEADER := $(WORK)/generated/ps5_ariang_html.h
+PS5_LAUNCHER_HEADER := $(WORK)/generated/ps5_launcher_assets.h
+ifeq ($(ARIANG_FETCH),1)
+ARIANG_INPUTS := $(ARIANG_SRC)/.unpacked
+else
+ARIANG_INPUTS := $(ARIANG_SRC)/package.json $(ARIANG_SRC)/package-lock.json $(ARIANG_SRC)/gulpfile.js $(shell find $(ARIANG_SRC)/src -type f 2>/dev/null)
+endif
+
+.PHONY: all clean refresh-ca prepare-layout FORCE
+all: $(OUT)/aria2.elf $(OUT_ARIA2)/ca-bundle.crt $(OUT_ARIA2)/aria2.conf $(LICENSE_OUT)/c-ares-LICENSE.md $(LICENSE_OUT)/openssl-LICENSE.txt $(LICENSE_OUT)/AriaNg-LICENSE.md $(LICENSE_OUT)/AriaNg-THIRD-PARTY-NOTICES.md
+
+prepare-layout:
+	mkdir -p $(OUT_ARIA2) $(LICENSE_OUT)
+	rm -f -- $(OUT)/ca-bundle.crt $(OUT)/aria2.conf $(OUT)/README.md \
+	  $(OUT)/c-ares-LICENSE.md $(OUT)/openssl-LICENSE.txt \
+	  $(OUT)/AriaNg-LICENSE.md $(OUT)/AriaNg-THIRD-PARTY-NOTICES.md \
+	  $(OUT)/data/aria2/aria2.conf $(OUT)/data/aria2/ca-bundle.crt
+	rmdir --ignore-fail-on-non-empty $(OUT)/data/aria2 $(OUT)/data 2>/dev/null || true
+
+ifeq ($(ARIANG_FETCH),1)
+$(ARIANG_ARCHIVE):
+	mkdir -p $(dir $@)
+	curl --fail --location --retry 3 --output $@.tmp \
+	  https://github.com/mayswind/AriaNg/archive/$(ARIANG_REV).tar.gz
+	printf '%s  %s\n' $(ARIANG_SHA256) $@.tmp | sha256sum --check --status
+	mv $@.tmp $@
+
+$(ARIANG_SRC)/.unpacked: $(ARIANG_ARCHIVE)
+	tar -xzf $< -C $(WORK)
+	touch $@
+endif
+
+$(CARES_ARCHIVE):
+	mkdir -p $(dir $@)
+	curl --fail --location --retry 3 --output $@.tmp \
+	  https://github.com/c-ares/c-ares/releases/download/v$(CARES_VERSION)/c-ares-$(CARES_VERSION).tar.gz
+	printf '%s  %s\n' $(CARES_SHA256) $@.tmp | sha256sum --check --status
+	mv $@.tmp $@
+
+$(CARES_SOURCE)/.unpacked: $(CARES_ARCHIVE)
+	tar -xzf $< -C $(WORK)
+	touch $@
+
+$(CARES_LIB): $(CARES_SOURCE)/.unpacked
+	$(PS5_SDK)/bin/prospero-cmake -S $(CARES_SOURCE) -B $(CARES_BUILD) \
+	  -DCARES_STATIC=ON -DCARES_SHARED=OFF -DCARES_STATIC_PIC=ON \
+	  -DCARES_BUILD_TOOLS=OFF -DCARES_BUILD_TESTS=OFF \
+	  -DCMAKE_INSTALL_PREFIX=/user/homebrew -DCMAKE_INSTALL_LIBDIR=lib
+	cmake --build $(CARES_BUILD) --parallel $(JOBS)
+	DESTDIR=$(WORK)/stage cmake --install $(CARES_BUILD)
+	test -f $@
+
+$(OPENSSL_ARCHIVE):
+	mkdir -p $(dir $@)
+	curl --fail --location --retry 3 --output $@.tmp \
+	  https://github.com/openssl/openssl/releases/download/openssl-$(OPENSSL_VERSION)/openssl-$(OPENSSL_VERSION).tar.gz
+	printf '%s  %s\n' $(OPENSSL_SHA256) $@.tmp | sha256sum --check --status
+	mv $@.tmp $@
+
+$(OPENSSL_SOURCE)/.unpacked: $(OPENSSL_ARCHIVE)
+	tar -xzf $< -C $(WORK)
+	touch $@
+
+$(OPENSSL_SOURCE)/.configured: $(OPENSSL_SOURCE)/.unpacked
+	cd $(OPENSSL_SOURCE) && \
+	  CC=$(PS5_SDK)/bin/prospero-clang \
+	  AR=$(PS5_SDK)/bin/prospero-ar \
+	  RANLIB=$(PS5_SDK)/bin/prospero-ranlib \
+	  perl ./Configure BSD-x86_64 no-shared no-module no-tests no-apps \
+	    --prefix=/user/homebrew --openssldir=/user/homebrew/ssl
+	touch $@
+
+$(OPENSSL_CRYPTO) $(OPENSSL_SSL) &: $(OPENSSL_SOURCE)/.configured
+	$(MAKE) -C $(OPENSSL_SOURCE) -j$(JOBS) build_libs
+	$(MAKE) -C $(OPENSSL_SOURCE) DESTDIR=$(WORK)/openssl-stage install_dev
+	test -f $(OPENSSL_CRYPTO)
+	test -f $(OPENSSL_SSL)
+
+$(PS5_DEFAULT_HEADER): $(ROOT)/ps5/aria2.conf.in $(ROOT)/ps5/gen_default_config.py
+	python3 $(ROOT)/ps5/gen_default_config.py $< $@
+
+$(ARIANG_HTML): $(ARIANG_INPUTS)
+	rm -rf -- $(ARIANG_BUILD)
+	mkdir -p $(ARIANG_BUILD)
+	tar -C $(ARIANG_SRC) --exclude=.git --exclude=node_modules --exclude=dist -cf - . | tar -C $(ARIANG_BUILD) -xf -
+	cd $(ARIANG_BUILD) && npm ci --no-audit --no-fund
+	cd $(ARIANG_BUILD) && ./node_modules/.bin/gulp clean build-bundle
+	test -s $@
+	touch $@
+
+$(PS5_ARIANG_HEADER): $(ARIANG_HTML) $(ROOT)/ps5/gen_ariang_html.py
+	python3 $(ROOT)/ps5/gen_ariang_html.py $< $@
+
+$(PS5_LAUNCHER_HEADER): $(ARIANG_HTML) $(ROOT)/ps5/launcher-param.json $(ROOT)/ps5/gen_launcher_assets.py
+	python3 $(ROOT)/ps5/gen_launcher_assets.py $(ROOT)/ps5/launcher-param.json $(ARIANG_BUILD)/src/tileicon.png $@
+
+$(ROOT)/configure: $(ROOT)/configure.ac $(ROOT)/Makefile.am $(ROOT)/src/Makefile.am
+	cd $(ROOT) && autoreconf -fi
+
+$(ARIA2_BUILD)/Makefile: $(ROOT)/configure $(CARES_LIB) $(OPENSSL_CRYPTO) $(OPENSSL_SSL) $(ROOT)/Makefile.ps5
+	mkdir -p $(ARIA2_BUILD)
+	cd $(ARIA2_BUILD) && \
+	  CPPFLAGS='-DARIA2_PS5 -I$(WORK)/generated' \
+	  LIBS='-lSceIpmi -lSceAppInstUtil' \
+	  CC=$(PS5_SDK)/bin/prospero-clang \
+	  CXX=$(PS5_SDK)/bin/prospero-clang++ \
+	  AR=$(PS5_SDK)/bin/prospero-ar \
+	  RANLIB=$(PS5_SDK)/bin/prospero-ranlib \
+	  PKG_CONFIG=$(PS5_SDK)/bin/prospero-pkg-config \
+	  SQLITE3_CFLAGS=-I$(PS5_SDK)/target/user/homebrew/include \
+	  SQLITE3_LIBS=-lsqlite3 \
+	  OPENSSL_CFLAGS=-I$(OPENSSL_STAGE)/include \
+	  OPENSSL_LIBS='$(OPENSSL_SSL) $(OPENSSL_CRYPTO)' \
+	  LIBSSH2_CFLAGS=-I$(PS5_SDK)/target/user/homebrew/include \
+	  LIBSSH2_LIBS='$(PS5_SDK)/target/user/homebrew/lib/libssh2.a $(OPENSSL_SSL) $(OPENSSL_CRYPTO) -lz' \
+	  LIBCARES_CFLAGS='-I$(CARES_STAGE)/include -DCARES_STATICLIB' \
+	  LIBCARES_LIBS='-L$(CARES_STAGE)/lib -lcares' \
+	  $(ROOT)/configure --host=x86_64-unknown-freebsd \
+	    --build=$$($(ROOT)/config.guess) --disable-nls \
+	    --without-gnutls --with-openssl --with-libz \
+	    --without-libxml2 --with-libexpat --with-sqlite3 \
+	    --with-libssh2 --with-libcares --without-libuv \
+	    --enable-bittorrent --enable-metalink --enable-websocket \
+	    --with-ca-bundle=/system/common/cert/CA_LIST.cer
+
+$(OUT)/aria2.elf: $(ARIA2_BUILD)/Makefile $(PS5_DEFAULT_HEADER) $(PS5_ARIANG_HEADER) $(PS5_LAUNCHER_HEADER) FORCE | prepare-layout
+	$(MAKE) -C $(ARIA2_BUILD) -j$(JOBS)
+	mkdir -p $(OUT)
+	cp $(ARIA2_BUILD)/src/aria2c $@
+	$(PS5_SDK)/bin/prospero-strip --strip-all $@
+	rm -f -- $(OUT)/ossl-modules/legacy.so
+	rmdir --ignore-fail-on-non-empty $(OUT)/ossl-modules 2>/dev/null || true
+
+$(OUT_ARIA2)/ca-bundle.crt: | prepare-layout
+	mkdir -p $(OUT_ARIA2) $(WORK)/downloads
+	curl --fail --location --retry 3 --output $(WORK)/downloads/cacert.pem https://curl.se/ca/cacert.pem
+	curl --fail --location --retry 3 --output $(WORK)/downloads/cacert.pem.sha256 https://curl.se/ca/cacert.pem.sha256
+	cd $(WORK)/downloads && sha256sum --check cacert.pem.sha256
+	openssl x509 -in $(WORK)/downloads/cacert.pem -noout >/dev/null
+	cp $(WORK)/downloads/cacert.pem $@
+
+$(LICENSE_OUT)/openssl-LICENSE.txt: $(OPENSSL_SOURCE)/.unpacked | prepare-layout
+	mkdir -p $(LICENSE_OUT)
+	cp $(OPENSSL_SOURCE)/LICENSE.txt $@
+
+$(OUT_ARIA2)/aria2.conf: $(ROOT)/ps5/aria2.conf.in | prepare-layout
+	mkdir -p $(OUT_ARIA2)
+	cp $< $@
+	chmod 644 $@
+
+$(LICENSE_OUT)/c-ares-LICENSE.md: $(CARES_SOURCE)/.unpacked | prepare-layout
+	mkdir -p $(LICENSE_OUT)
+	cp $(CARES_SOURCE)/LICENSE.md $@
+
+$(LICENSE_OUT)/AriaNg-LICENSE.md: $(ARIANG_HTML) | prepare-layout
+	mkdir -p $(LICENSE_OUT)
+	cp $(ARIANG_BUILD)/LICENSE $@
+
+$(LICENSE_OUT)/AriaNg-THIRD-PARTY-NOTICES.md: $(ARIANG_HTML) $(ROOT)/ps5/OFL-1.1.txt $(ROOT)/ps5/gen_ariang_notices.py | prepare-layout
+	python3 $(ROOT)/ps5/gen_ariang_notices.py $(ARIANG_BUILD) $(ROOT)/ps5/OFL-1.1.txt $@
+
+refresh-ca:
+	$(MAKE) -f $(ROOT)/Makefile.ps5 -B $(OUT_ARIA2)/ca-bundle.crt
+
+clean:
+	rm -rf -- $(WORK) $(OUT)

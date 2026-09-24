@@ -36,6 +36,17 @@
 
 #include <unistd.h>
 
+#ifdef ARIA2_PS5
+#  include <cerrno>
+#  include <cstdio>
+#  include <fcntl.h>
+#  include <sys/stat.h>
+#  include <sys/syscall.h>
+#  include <vector>
+
+extern "C" int sceKernelSendNotificationRequest(int, void*, size_t, int);
+#endif
+
 #ifdef __MINGW32__
 #  include <shellapi.h>
 #endif // __MINGW32__
@@ -70,8 +81,18 @@ error_code::Value main(int argc, char** argv)
 
   Context context(true, winArgc, pargv.get(), KeyVals());
 #else  // !__MINGW32__
+#  ifdef ARIA2_PS5
+  char confPath[] = "--conf-path=/data/aria2/aria2.conf";
+  std::vector<char*> ps5Argv;
+  ps5Argv.reserve(argc + 1);
+  ps5Argv.push_back(argv[0]);
+  ps5Argv.push_back(confPath);
+  ps5Argv.insert(ps5Argv.end(), argv + 1, argv + argc);
+  Context context(true, argc + 1, ps5Argv.data(), KeyVals());
+#  else
   Context context(true, argc, argv, KeyVals());
-#endif // !__MINGW32__
+#  endif
+#endif
 
   error_code::Value exitStatus = error_code::FINISHED;
   if (context.reqinfo) {
@@ -84,8 +105,56 @@ error_code::Value main(int argc, char** argv)
 
 int main(int argc, char** argv)
 {
+#ifdef ARIA2_PS5
+  syscall(SYS_thr_set_name, -1, "aria2.elf");
+#endif
   aria2::error_code::Value r;
   aria2::global::initConsole(false);
+#ifdef ARIA2_PS5
+  if (mkdir("/data/aria2", 0755) != 0 && errno != EEXIST) {
+    aria2::global::cerr()->printf("Cannot create PS5 data directory (errno=%d).\n",
+                                  errno);
+    return aria2::error_code::UNKNOWN_ERROR;
+  }
+  int instanceFd = open("/data/aria2/aria2.lock", O_CREAT | O_RDWR | O_CLOEXEC,
+                        0600);
+  if (instanceFd < 0) {
+    aria2::global::cerr()->printf("Cannot open PS5 instance lock (errno=%d).\n",
+                                  errno);
+    return aria2::error_code::UNKNOWN_ERROR;
+  }
+  if (flock(instanceFd, LOCK_EX | LOCK_NB) != 0) {
+    const int lockError = errno;
+    close(instanceFd);
+    if (lockError == EWOULDBLOCK) {
+      struct NotificationRequest {
+        char reserved[45];
+        char message[3075];
+      } request = {};
+      std::snprintf(request.message, sizeof(request.message),
+                    "aria2 v%s\nAlready running...", PACKAGE_VERSION);
+      if (sceKernelSendNotificationRequest(0, &request, sizeof(request), 0) !=
+          0) {
+        aria2::global::cerr()->printf(
+            "Failed to send PS5 already-running notification.\n");
+      }
+      aria2::global::cerr()->printf("aria2.elf is already running.\n");
+      return aria2::error_code::FINISHED;
+    }
+    aria2::global::cerr()->printf("Cannot lock PS5 instance file (errno=%d).\n",
+                                  lockError);
+    return aria2::error_code::UNKNOWN_ERROR;
+  }
+  int sessionFd = open("/data/aria2/aria2.session",
+                       O_CREAT | O_RDWR | O_CLOEXEC, 0644);
+  if (sessionFd < 0) {
+    aria2::global::cerr()->printf("Cannot open PS5 session file (errno=%d).\n",
+                                  errno);
+    close(instanceFd);
+    return aria2::error_code::UNKNOWN_ERROR;
+  }
+  close(sessionFd);
+#endif
   try {
     aria2::Platform platform;
     r = aria2::main(argc, argv);
@@ -95,5 +164,8 @@ int main(int argc, char** argv)
                                   ex.stackTrace().c_str());
     r = ex.getErrorCode();
   }
+#ifdef ARIA2_PS5
+  close(instanceFd);
+#endif
   return r;
 }

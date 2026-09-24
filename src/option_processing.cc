@@ -34,6 +34,10 @@
 /* copyright --> */
 #include "common.h"
 
+#ifdef ARIA2_PS5
+#  include "ps5_default_config.h"
+#endif
+
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -219,6 +223,10 @@ error_code::Value option_processing(Option& op, bool standalone,
     }
     auto confOption = std::make_shared<Option>();
     oparser->parseDefaultValues(*confOption);
+#ifdef ARIA2_PS5
+    std::stringstream ps5Defaults(kPs5Aria2Defaults);
+    oparser->parse(*confOption, ps5Defaults);
+#endif
     if (!noConf) {
       std::string cfname =
           ucfname.empty() ? oparser->find(PREF_CONF_PATH)->getDefaultValue()
@@ -251,7 +259,11 @@ error_code::Value option_processing(Option& op, bool standalone,
           return e.getErrorCode();
         }
       }
-      else if (!ucfname.empty()) {
+      else if (!ucfname.empty()
+#ifdef ARIA2_PS5
+               && cfname != "/data/aria2/aria2.conf"
+#endif
+      ) {
         global::cerr()->printf(_("Configuration file %s is not found."),
                                cfname.c_str());
         global::cerr()->printf("\n");

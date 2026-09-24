@@ -48,6 +48,11 @@ namespace aria2 {
 std::vector<OptionHandler*> OptionHandlerFactory::createOptionHandlers()
 {
   std::vector<OptionHandler*> handlers;
+#ifdef ARIA2_PS5
+  const auto& rpcDefault = A2_V_TRUE;
+#else
+  const auto& rpcDefault = A2_V_FALSE;
+#endif
   static const std::string logLevels[] = {V_DEBUG, V_INFO, V_NOTICE, V_WARN,
                                           V_ERROR};
   // General Options
@@ -276,7 +281,7 @@ std::vector<OptionHandler*> OptionHandlerFactory::createOptionHandlers()
 #endif // HAVE_MMAP || __MINGW32__
   {
     OptionHandler* op(new BooleanOptionHandler(
-        PREF_ENABLE_RPC, TEXT_ENABLE_RPC, A2_V_FALSE, OptionHandler::OPT_ARG));
+        PREF_ENABLE_RPC, TEXT_ENABLE_RPC, rpcDefault, OptionHandler::OPT_ARG));
     op->addTag(TAG_RPC);
     handlers.push_back(op);
   }
@@ -738,7 +743,7 @@ std::vector<OptionHandler*> OptionHandlerFactory::createOptionHandlers()
   }
   {
     OptionHandler* op(new BooleanOptionHandler(
-        PREF_RPC_ALLOW_ORIGIN_ALL, TEXT_RPC_ALLOW_ORIGIN_ALL, A2_V_FALSE,
+        PREF_RPC_ALLOW_ORIGIN_ALL, TEXT_RPC_ALLOW_ORIGIN_ALL, rpcDefault,
         OptionHandler::OPT_ARG));
     op->addTag(TAG_RPC);
     handlers.push_back(op);
@@ -759,7 +764,7 @@ std::vector<OptionHandler*> OptionHandlerFactory::createOptionHandlers()
   }
   {
     OptionHandler* op(new BooleanOptionHandler(PREF_RPC_LISTEN_ALL,
-                                               TEXT_RPC_LISTEN_ALL, A2_V_FALSE,
+                                               TEXT_RPC_LISTEN_ALL, rpcDefault,
                                                OptionHandler::OPT_ARG));
     op->addTag(TAG_RPC);
     handlers.push_back(op);

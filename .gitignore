@@ -44,3 +44,6 @@ compile
 main.log
 main.trs
 test-suite.log
+
+/.ps5-work/
+/ps5-build/
